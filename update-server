@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Keep the existing update-server invocation available."""
+
+import sys
+from pathlib import Path
+
+# A source deployment can keep its package beside the existing launcher.
+source = Path(__file__).resolve().parent / "src"
+if (source / "pacwarden" / "__init__.py").is_file():
+    sys.path.insert(0, str(source))
+
+from pacwarden.cli import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())

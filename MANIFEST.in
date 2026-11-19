@@ -1,0 +1,2 @@
+include config.example.toml install.sh
+include systemd/pacwarden.service systemd/pacwarden.timer

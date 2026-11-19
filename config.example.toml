@@ -1,0 +1,66 @@
+# Keep top-level settings above the table headers. Omitted settings use the defaults shown here.
+
+# Run apt-get autoremove after updating Ubuntu containers. --no-apt-autoremove overrides this.
+apt_autoremove = true
+
+# Maximum time in seconds for each external command.
+command_timeout_seconds = 3600
+
+# Absolute directory for reboot-required.json. Keep the same path across runs to retain pending state.
+state_dir = "/var/lib/update-server"
+
+# The default run updates only the host. In your private config, replace
+# containers = [] with one [[containers]] block per Incus instance, in update order.
+containers = []
+
+# [[containers]]
+# name = "example-container"
+# distro = "ubuntu"  # "arch" or "ubuntu"
+
+[reboot]
+# Allow a required host reboot after successful host update and service verification.
+# --no-reboot suppresses it for a run. A reboot may leave encrypted disks waiting for manual unlock.
+auto_reboot = true
+
+# Installed Arch kernel package to compare against the running kernel on every run.
+kernel_package = "linux"
+
+# Host packages whose version changes trigger reboot detection. Omit this list to use
+# the configured kernel package, systemd, and glibc. Add hardware-specific
+# packages in your private config. Use [] to check only the kernel.
+reboot_packages = ["linux", "systemd", "glibc"]
+
+[services]
+# Check the NGINX configuration and restart NGINX after any host package upgrades if it is active.
+restart_nginx_after_host_updates = true
+
+[notifications]
+# Master switch for ntfy notifications. --no-notifications overrides this.
+enabled = true
+# Successful run with zero packages updated.
+success_no_updates = false
+# Successful run with one or more packages updated.
+success_with_updates = true
+# Host update, service verification, or container update failed.
+update_failed = true
+# A new reboot reason appeared and the host is waiting for a manual reboot.
+reboot_required = true
+# The host is about to reboot automatically.
+rebooting = true
+# An unexpected error ended the run.
+script_crashed = true
+# NGINX restarted successfully after host updates.
+service_restarted = false
+# NGINX validation, restart, or verification failed.
+service_restart_failed = true
+
+[notifications.ntfy]
+# Name of the environment variable containing the full ntfy topic URL.
+# Uncomment this once the variable is set in the updater's environment.
+# url_env = "PACWARDEN_NTFY_URL"
+
+# Alternatively, set a literal URL in a private config file. Set only one of url_env and url.
+# url = "https://ntfy.example.invalid/your-topic"
+
+# HTTP request timeout in seconds.
+timeout_seconds = 10

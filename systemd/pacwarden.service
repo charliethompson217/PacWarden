@@ -1,0 +1,10 @@
+[Unit]
+Description=Update the Arch Linux host and configured Incus containers
+
+[Service]
+Type=oneshot
+ExecStart=/opt/pacwarden/venv/bin/pacwarden --no-reboot --no-apt-autoremove
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

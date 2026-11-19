@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pacwarden"
+version = "0.1.0"
+description = "Update an Arch Linux host and its Incus containers"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = []
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: System :: Systems Administration",
+]
+
+[project.scripts]
+pacwarden = "pacwarden.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
