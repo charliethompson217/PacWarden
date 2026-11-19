@@ -1,8 +1,9 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from .config import Distro
 from .execution.base import Executor
-from .packages.base import PackageManager
+from .packages.base import AvailableUpdates, PackageManager
 
 
 @dataclass(frozen=True)
@@ -11,6 +12,19 @@ class UpdateTarget:
     executor: Executor
     package_manager: PackageManager
     prepare: Callable[[], None] | None = None
+    distro: Distro = Distro.ARCH
+
+
+@dataclass(frozen=True)
+class TargetCheckResult:
+    name: str
+    distro: Distro
+    available: AvailableUpdates | None = None
+    error: str | None = None
+
+    @property
+    def success(self) -> bool:
+        return self.available is not None
 
 
 @dataclass(frozen=True)

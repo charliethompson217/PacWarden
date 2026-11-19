@@ -11,6 +11,7 @@ from .base import CommandError
 @dataclass(frozen=True)
 class LocalExecutor:
     timeout_seconds: int
+    log_commands: bool = True
 
     def run(
         self,
@@ -21,7 +22,8 @@ class LocalExecutor:
         sensitive: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         display = "[sensitive command]" if sensitive else shlex.join(command)
-        log(f"Running: {display}")
+        if self.log_commands:
+            log(f"Running: {display}")
         returncode = None
         try:
             return subprocess.run(

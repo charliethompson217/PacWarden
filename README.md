@@ -57,6 +57,24 @@ sudo /usr/local/bin/pacwarden --no-reboot --no-apt-autoremove
 
 This command applies package updates and reports whether the host needs a reboot. Without the overrides, manual runs follow your TOML settings, which permit automatic reboot and Ubuntu autoremove by default. Run `pacwarden --help` to see all options, including `--config PATH` and `--no-notifications`.
 
+### Check for available updates
+
+```bash
+pacwarden check                 # Count available updates by target
+pacwarden check --details       # Show package names and both versions
+pacwarden check --json          # Write structured results to stdout
+pacwarden check --refresh       # Refresh Ubuntu repository metadata first
+```
+
+Checks run on the host first and then on the configured containers in order. They leave installed packages, services, and reboot state untouched and send no notifications. Use `--config PATH` before or after `check` to select a configuration. The installer creates a root-only default config. A host check can run without root with a readable config. Container checks require Incus access, and APT refreshes require permission to write its metadata on the target.
+
+- **Arch** checks require `checkupdates` from `pacman-contrib` on the host and each Arch container. Install it through your usual full-system update workflow. The PacWarden installer leaves this optional dependency to you. `checkupdates` refreshes an isolated sync database on every check and leaves the live pacman database alone. Results cover configured binary repositories. AUR packages built locally are outside that scope unless they are also in a configured repository.
+- **Ubuntu** checks require `python3-apt` on each Ubuntu container. Cached repository metadata can be stale or empty. `--refresh` uses `apt-get update` with update hooks disabled and requires APT support for `--error-on=any` (available on Ubuntu 22.04 LTS and later). Results show APT upgrade candidates. Holds, dependency resolution, and phased updates can affect what a subsequent upgrade actually installs.
+
+JSON always includes package details, including when `--details` is also supplied. The top-level fields are `targets`, `total_updates` (the sum from successful checks), and `failed_targets` (a count). Each target has `name`, `distro`, `success`, `metadata_refreshed`, `updates`, and `error`. On success, `metadata_refreshed` is `true` for a refresh in this run or `false` for cached metadata, `updates` is a list sorted by package name, and `error` is `null`. Each package has `name`, `installed_version`, and `available_version`. On failure, `metadata_refreshed` and `updates` are `null` and `error` is a diagnostic string. Operational messages go to stderr in JSON mode.
+
+Exit status is `0` if all checks succeed, even when updates are available, `1` if any target fails, and `2` for a configuration or CLI usage error. An interrupt exits with `130`. To apply updates, use `pacwarden update` or the existing invocation without a subcommand.
+
 ## Automatic updates with systemd
 
 The included timer runs hourly and catches up on a missed run after downtime. Scheduled updates detect pending reboots and skip automatic reboot and Ubuntu autoremove.

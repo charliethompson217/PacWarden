@@ -1,6 +1,9 @@
-from typing import Protocol
+from collections.abc import Sequence
+from dataclasses import dataclass
+from subprocess import CompletedProcess
+from typing import Protocol, runtime_checkable
 
-from ..execution.base import Executor
+from ..execution.base import CommandError, Executor
 from ..reporting import DiagnosticError
 
 
@@ -8,6 +11,35 @@ class PackageManager(Protocol):
     def installed_versions(self, executor: Executor) -> dict[str, str]: ...
 
     def upgrade(self, executor: Executor) -> None: ...
+
+
+@dataclass(frozen=True)
+class PackageUpdate:
+    name: str
+    installed_version: str
+    available_version: str
+
+
+@dataclass(frozen=True)
+class AvailableUpdates:
+    updates: tuple[PackageUpdate, ...]
+    metadata_refreshed: bool
+
+
+@runtime_checkable
+class UpdateChecker(Protocol):
+    def available_updates(self, executor: Executor, *, refresh: bool) -> AvailableUpdates: ...
+
+
+def run_check_command(
+    executor: Executor, command: Sequence[str], operation: str,
+) -> CompletedProcess[str]:
+    # Repository diagnostics can contain credentials. Capture them for local
+    # classification and keep them out of check output.
+    try:
+        return executor.run(command, capture_output=True, check=False, sensitive=True)
+    except CommandError as exc:
+        raise DiagnosticError(f"{operation} could not run ({exc})") from None
 
 
 def parse_installed_versions(output: str) -> dict[str, str]:

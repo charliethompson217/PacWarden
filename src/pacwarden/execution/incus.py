@@ -44,4 +44,7 @@ def ensure_container_running(executor: Executor, name: str) -> None:
                 if status in _INACTIVE_STATUSES:
                     raise DiagnosticError(f"container status is {status!r}")
                 raise DiagnosticError("container has an unrecognized status")
+    detail = (result.stderr or "").lower()
+    if any(phrase in detail for phrase in ("permission denied", "not authorized", "not trusted")):
+        raise DiagnosticError("Permission denied inspecting the container. Check Incus access.")
     raise DiagnosticError("container does not exist or cannot be inspected")
