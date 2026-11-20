@@ -61,7 +61,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     _add_global_options(check)
     check.add_argument("--details", action="store_true", default=False,
-                       help="Show package names and versions by target.")
+                       help="Show package names, versions, and upgrade status by target.")
     check.add_argument("--json", action="store_true", default=False,
                        help="Write JSON with package details to stdout.")
     check.add_argument("--refresh", action="store_true", default=False,

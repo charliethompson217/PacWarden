@@ -1,9 +1,10 @@
 import json
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 
 from .models import TargetCheckResult, UpdateTarget
-from .packages.base import UpdateChecker
+from .packages.base import UpdateChecker, UpgradeStatus
 from .reporting import DiagnosticError, describe_error, error
 
 
@@ -19,6 +20,12 @@ class CheckSummary:
     def total_updates(self) -> int:
         return sum(len(target.available.updates) for target in self.targets if target.available is not None)
 
+    def _status_counts(self) -> Counter[UpgradeStatus]:
+        return Counter(
+            update.status for target in self.targets if target.available is not None
+            for update in target.available.updates
+        )
+
     def to_json(self) -> str:
         targets = []
         for result in self.targets:
@@ -31,43 +38,52 @@ class CheckSummary:
                 "updates": [asdict(update) for update in available.updates] if available is not None else None,
                 "error": result.error,
             })
+        counts = self._status_counts()
         return json.dumps({
             "targets": targets,
             "total_updates": self.total_updates,
             "failed_targets": self.failed_targets,
+            **{f"{status}_updates": counts[status] for status in UpgradeStatus},
         }, indent=2)
 
     def to_console(self, *, details: bool) -> str:
         blocks = []
         targets_with_updates = 0
-        summary_rows = [("TARGET", "DISTRO", "UPDATES", "METADATA")]
+        summary_rows = [("TARGET", "DISTRO", "NEWER", "READY", "DEFERRED", "UNASSESSED", "METADATA")]
         for result in self.targets:
+            title = f"{result.name} ({result.distro.value})"
             available = result.available
             if available is None:
-                count, metadata = "FAILED", "—"
-            else:
-                count = str(len(available.updates))
-                metadata = "refreshed" if available.metadata_refreshed else "cached (may be stale)"
-                targets_with_updates += bool(available.updates)
+                if details:
+                    blocks.append(f"{title}: FAILED")
+                else:
+                    summary_rows.append((result.name, result.distro.value, "FAILED", "—", "—", "—", "—"))
+                continue
 
+            count = len(available.updates)
+            counts = available.status_counts()
+            metadata = "refreshed" if available.metadata_refreshed else "cached (may be stale)"
+            targets_with_updates += bool(available.updates)
             if not details:
-                summary_rows.append((result.name, result.distro.value, count, metadata))
+                summary_rows.append((result.name, result.distro.value, str(count), *(
+                    str(counts[status]) for status in UpgradeStatus
+                ), metadata))
                 continue
-            title = f"{result.name} ({result.distro.value})"
-            if available is None:
-                blocks.append(f"{title}: FAILED")
-                continue
-            block = f"{title}: {_count(len(available.updates), 'update')} — metadata {metadata}"
+            block = f"{title}: {_count(count, 'candidate')} — metadata {metadata}"
             if available.updates:
-                packages = [("PACKAGE", "INSTALLED", "AVAILABLE"), *(
-                    (item.name, item.installed_version, item.available_version) for item in available.updates
+                packages = [("PACKAGE", "INSTALLED", "AVAILABLE", "STATUS"), *(
+                    (item.name, item.installed_version, item.available_version, item.status.value)
+                    for item in available.updates
                 )]
                 block += "\n\n" + _table(packages)
             blocks.append(block)
 
         if not details:
             blocks.append(_table(summary_rows))
-        total = f"Total: {_count(self.total_updates, 'update')} across {_count(targets_with_updates, 'target')}."
+        total = f"Total: {_count(self.total_updates, 'candidate')} across {_count(targets_with_updates, 'target')}."
+        if self.total_updates:
+            counts = self._status_counts()
+            total += " " + ", ".join(f"{counts[status]} {status}" for status in UpgradeStatus) + "."
         if self.failed_targets:
             total += f" {_count(self.failed_targets, 'check')} failed."
         blocks.append(total)

@@ -1,5 +1,7 @@
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from subprocess import CompletedProcess
 from typing import Protocol, runtime_checkable
 
@@ -13,17 +15,27 @@ class PackageManager(Protocol):
     def upgrade(self, executor: Executor) -> None: ...
 
 
+class UpgradeStatus(StrEnum):
+    READY = "ready"
+    DEFERRED = "deferred"
+    UNASSESSED = "unassessed"
+
+
 @dataclass(frozen=True)
 class PackageUpdate:
     name: str
     installed_version: str
     available_version: str
+    status: UpgradeStatus = UpgradeStatus.UNASSESSED
 
 
 @dataclass(frozen=True)
 class AvailableUpdates:
     updates: tuple[PackageUpdate, ...]
     metadata_refreshed: bool
+
+    def status_counts(self) -> Counter[UpgradeStatus]:
+        return Counter(update.status for update in self.updates)
 
 
 @runtime_checkable

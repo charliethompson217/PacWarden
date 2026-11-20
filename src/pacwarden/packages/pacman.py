@@ -33,6 +33,17 @@ class PacmanPackageManager:
                 "Cannot create an isolated checkupdates database. Check /tmp permissions and free space."
             )
         if result.returncode != 0:
+            diagnostics = {
+                line.strip().removeprefix("==> ERROR: ")
+                for line in (result.stderr or "").splitlines()
+            }
+            if "Cannot find the fakeroot binary" in diagnostics:
+                raise DiagnosticError("checkupdates requires fakeroot. Install fakeroot on this target.")
+            if "Cannot fetch updates" in diagnostics:
+                raise DiagnosticError(
+                    "checkupdates could not refresh its isolated repository database. "
+                    "Check mirror access and pacman configuration on this target."
+                )
             raise DiagnosticError(
                 f"checkupdates failed (exit {result.returncode}). Check repository access, "
                 "local package database permissions, and the pacman-contrib installation."

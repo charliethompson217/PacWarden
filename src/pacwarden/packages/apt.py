@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from ..execution.base import Executor
 from ..reporting import DiagnosticError, log
-from .base import AvailableUpdates, PackageUpdate, parse_installed_versions, run_check_command
+from .base import AvailableUpdates, PackageUpdate, UpgradeStatus, parse_installed_versions, run_check_command
 
 
 _PRESENT_STATES = frozenset({
@@ -19,9 +19,27 @@ except ImportError:
     raise SystemExit(11)
 
 apt_pkg.config.set("Dir::Cache::srcpkgcache", "")
-for package in apt.Cache(memonly=True):
-    if package.is_upgradable and package.installed is not None and package.candidate is not None:
-        print(package.fullname, package.installed.version, package.candidate.version, sep="\\t")
+cache = apt.Cache(memonly=True)
+candidates = []
+for package in cache:
+    if package.is_upgradable:
+        installed, candidate = package.installed, package.candidate
+        if installed is not None and candidate is not None:
+            candidates.append((package, installed.version, candidate.version))
+
+if candidates:
+    try:
+        # This only marks packages in the in-memory cache. Applying the plan
+        # would require a separate commit, which this query never calls.
+        cache.upgrade(dist_upgrade=True)
+    except Exception:
+        raise SystemExit(12)
+    if cache.broken_count:
+        raise SystemExit(12)
+
+for package, installed, available in candidates:
+    status = "ready" if package.marked_upgrade else "deferred"
+    print(package.fullname, installed, available, status, sep="\\t")
 """
 
 # Apply this config after the target's configuration so arbitrary update hooks
@@ -68,19 +86,22 @@ class AptPackageManager:
         )
         if result.returncode in (11, 127):
             raise DiagnosticError("APT's Python bindings are unavailable. Install python3-apt on this target.")
+        if result.returncode == 12:
+            raise DiagnosticError("APT could not resolve a full-upgrade plan. Check the target's package dependencies.")
         if result.returncode:
             raise _apt_error("APT update query", result.returncode, result.stderr)
 
         updates: dict[str, PackageUpdate] = {}
         for line in result.stdout.splitlines():
             fields = line.split("\t")
-            if len(fields) != 3:
+            if len(fields) != 4:
                 raise DiagnosticError("Unexpected APT package list format")
-            name, installed, available = fields
+            name, installed, available, status = fields
             if (not _PACKAGE_NAME.fullmatch(name) or name in updates or
-                    not _VERSION.fullmatch(installed) or not _VERSION.fullmatch(available)):
+                    not _VERSION.fullmatch(installed) or not _VERSION.fullmatch(available) or
+                    status not in (UpgradeStatus.READY, UpgradeStatus.DEFERRED)):
                 raise DiagnosticError("Unexpected APT package list format")
-            updates[name] = PackageUpdate(name, installed, available)
+            updates[name] = PackageUpdate(name, installed, available, UpgradeStatus(status))
         return AvailableUpdates(tuple(updates.values()), metadata_refreshed=refresh)
 
     def installed_versions(self, executor: Executor) -> dict[str, str]:

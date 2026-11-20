@@ -8,14 +8,14 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from textwrap import dedent
 from types import SimpleNamespace
-from unittest.mock import Mock, create_autospec, patch
+from unittest.mock import MagicMock, Mock, create_autospec, patch
 
 from pacwarden.checking import check_targets
 from pacwarden.cli import main, parse_args
 from pacwarden.execution.base import Executor
 from pacwarden.models import UpdateTarget
 from pacwarden.packages import apt, pacman
-from pacwarden.packages.base import AvailableUpdates, PackageUpdate
+from pacwarden.packages.base import AvailableUpdates, PackageUpdate, UpgradeStatus
 from pacwarden.reporting import DiagnosticError
 
 
@@ -65,17 +65,31 @@ class PackageCheckTests(unittest.TestCase):
                 with self.assertRaises(DiagnosticError):
                     manager.available_updates(self.executor, refresh=False)
 
+    def test_arch_classifies_known_errors_without_exposing_command_stderr(self):
+        manager = pacman.PacmanPackageManager()
+        for upstream_error, message in (
+            ("Cannot find the fakeroot binary", "Install fakeroot on this target"),
+            ("Cannot fetch updates", "could not refresh its isolated repository database"),
+        ):
+            with self.subTest(upstream_error=upstream_error):
+                self.executor.run.return_value = completed(
+                    1, stderr=f"==> ERROR: {upstream_error}\n{REPOSITORY_ERROR}\n",
+                )
+                with self.assertRaisesRegex(DiagnosticError, message) as caught:
+                    manager.available_updates(self.executor, refresh=False)
+                self.assertNotIn("private-token", str(caught.exception))
+
     def test_apt_parses_cached_metadata_without_refreshing(self):
         self.executor.run.return_value = completed(stdout=(
-            "libfoo++1:amd64\t2:1.0~rc1-0ubuntu0.1\t2:1.0+really1.2-1ubuntu1\n"
-            "libfoo++1:i386\t2:1.0~rc1-0ubuntu0.1\t2:1.0+really1.2-1ubuntu1\n"
+            "libfoo++1:amd64\t2:1.0~rc1-0ubuntu0.1\t2:1.0+really1.2-1ubuntu1\tready\n"
+            "libfoo++1:i386\t2:1.0~rc1-0ubuntu0.1\t2:1.0+really1.2-1ubuntu1\tdeferred\n"
         ))
         manager = apt.AptPackageManager(autoremove=True)
         result = manager.available_updates(self.executor, refresh=False)
         self.assertFalse(result.metadata_refreshed)
         self.assertEqual(result.updates, tuple(
-            PackageUpdate(f"libfoo++1:{arch}", "2:1.0~rc1-0ubuntu0.1", "2:1.0+really1.2-1ubuntu1")
-            for arch in ("amd64", "i386")
+            PackageUpdate(f"libfoo++1:{arch}", "2:1.0~rc1-0ubuntu0.1", "2:1.0+really1.2-1ubuntu1", status)
+            for arch, status in (("amd64", UpgradeStatus.READY), ("i386", UpgradeStatus.DEFERRED))
         ))
         self.executor.run.assert_called_once_with(
             ["env", "LC_ALL=C", "/usr/bin/python3", "-IB", "-c", apt._QUERY],
@@ -106,7 +120,9 @@ class PackageCheckTests(unittest.TestCase):
 
     def test_apt_query_failures(self):
         manager = apt.AptPackageManager(autoremove=False)
-        for code, message in ((11, "Install python3-apt"), (1, "APT update query failed")):
+        for code, message in (
+            (11, "Install python3-apt"), (12, "could not resolve a full-upgrade plan"), (1, "APT update query failed"),
+        ):
             with self.subTest(code=code):
                 self.executor.run.return_value = completed(code, stderr=REPOSITORY_ERROR)
                 with self.assertRaisesRegex(DiagnosticError, message) as caught:
@@ -115,25 +131,41 @@ class PackageCheckTests(unittest.TestCase):
 
     def test_apt_rejects_malformed_or_duplicate_results(self):
         manager = apt.AptPackageManager(autoremove=False)
-        for output in ("curl 1 2\n", "curl\t1\t2\n" * 2, "curl\t1\t\033[31m2\n", REPOSITORY_ERROR):
+        for output in ("curl 1 2 ready\n", "curl\t1\t2\tready\n" * 2,
+                       "curl\t1\t\033[31m2\tready\n", "curl\t1\t2\tunknown\n", REPOSITORY_ERROR):
             with self.subTest(output=output):
                 self.executor.run.return_value = completed(stdout=output)
                 with self.assertRaisesRegex(DiagnosticError, "Unexpected APT package list format"):
                     manager.available_updates(self.executor, refresh=False)
 
-    def test_apt_query_uses_candidates_from_an_in_memory_cache(self):
-        package = SimpleNamespace(fullname="libssl3:i386", is_upgradable=True,
-                                  installed=SimpleNamespace(version="3.0.0-1"),
-                                  candidate=SimpleNamespace(version="3.0.0-2"))
-        cache = Mock(return_value=[SimpleNamespace(is_upgradable=False), package])
+    def test_apt_query_matches_candidates_to_an_in_memory_upgrade_plan(self):
+        ready = SimpleNamespace(fullname="libssl3:i386", is_upgradable=True,
+                                installed=SimpleNamespace(version="3.0.0-1"),
+                                candidate=SimpleNamespace(version="3.0.0-2"), marked_upgrade=False)
+        deferred = SimpleNamespace(fullname="systemd:amd64", is_upgradable=True,
+                                   installed=SimpleNamespace(version="255.4-1ubuntu8.11"),
+                                   candidate=SimpleNamespace(version="255.4-1ubuntu8.12"), marked_upgrade=False)
+        plan = MagicMock(broken_count=0)
+        plan.__iter__.return_value = [SimpleNamespace(is_upgradable=False), ready, deferred]
+
+        def solve(**_):
+            ready.marked_upgrade = True
+            deferred.candidate = deferred.installed
+
+        plan.upgrade.side_effect = solve
+        cache = Mock(return_value=plan)
         config = Mock()
         with (patch.dict("sys.modules", {"apt": SimpleNamespace(Cache=cache),
                                          "apt_pkg": SimpleNamespace(config=config)}),
               redirect_stdout(io.StringIO()) as stdout):
             exec(apt._QUERY, {})
-        self.assertEqual(stdout.getvalue(), "libssl3:i386\t3.0.0-1\t3.0.0-2\n")
+        self.assertEqual(stdout.getvalue(), "libssl3:i386\t3.0.0-1\t3.0.0-2\tready\n"
+                         "systemd:amd64\t255.4-1ubuntu8.11\t255.4-1ubuntu8.12\tdeferred\n")
         cache.assert_called_once_with(memonly=True)
         config.set.assert_called_once_with("Dir::Cache::srcpkgcache", "")
+        plan.upgrade.assert_called_once_with(dist_upgrade=True)
+        plan.commit.assert_not_called()
+        plan.update.assert_not_called()
 
     def test_workflow_accepts_a_new_package_manager_capability(self):
         class OtherPackageManager:
@@ -248,8 +280,8 @@ class CheckCliTests(unittest.TestCase):
         with patch("os.geteuid", return_value=1000):
             self.assertEqual(main(["--config", str(self.config), "check"]), 0)
         self.commands.assert_called_once()
-        self.assertRegex(self.stdout.getvalue(), r"host\s+arch\s+0\s+refreshed")
-        self.assertIn("0 updates across 0 targets", self.stdout.getvalue())
+        self.assertRegex(self.stdout.getvalue(), r"host\s+arch\s+0\s+0\s+0\s+0\s+refreshed")
+        self.assertIn("0 candidates across 0 targets", self.stdout.getvalue())
         self.assertEqual(self.stderr.getvalue(), "")
 
     def test_partial_failures_keep_target_order_and_emit_only_json_on_stdout(self):
@@ -274,7 +306,7 @@ class CheckCliTests(unittest.TestCase):
         self.commands.side_effect = [
             completed(stdout="zstd 1.5.7-1 -> 1.5.7-2\nnginx 1-1 -> 2-1\n"),
             completed(stdout="Status: STOPPED\n"),
-            running, completed(stdout="libssl3:arm64\t3.0.0-1\t3.0.0-2\n"),
+            running, completed(stdout="libssl3:arm64\t3.0.0-1\t3.0.0-2\tready\n"),
             completed(1, stderr=f"permission denied {REPOSITORY_ERROR}"),
             running, completed(1, stderr=REPOSITORY_ERROR),
             running, completed(2),
@@ -287,15 +319,19 @@ class CheckCliTests(unittest.TestCase):
                          ["host", "stopped", "remote:ubuntu", "inaccessible", "apt-failure", "arch"])
         self.assertEqual(output["total_updates"], 3)
         self.assertEqual(output["failed_targets"], 3)
+        self.assertEqual(output["ready_updates"], 1)
+        self.assertEqual(output["deferred_updates"], 0)
+        self.assertEqual(output["unassessed_updates"], 2)
         self.assertTrue(host["metadata_refreshed"])
         self.assertIsNone(host["error"])
         self.assertEqual(host["updates"], [
-            {"name": "nginx", "installed_version": "1-1", "available_version": "2-1"},
-            {"name": "zstd", "installed_version": "1.5.7-1", "available_version": "1.5.7-2"},
+            {"name": "nginx", "installed_version": "1-1", "available_version": "2-1", "status": "unassessed"},
+            {"name": "zstd", "installed_version": "1.5.7-1", "available_version": "1.5.7-2", "status": "unassessed"},
         ])
         self.assertEqual(ubuntu["distro"], "ubuntu")
         self.assertTrue(ubuntu["success"])
         self.assertFalse(ubuntu["metadata_refreshed"])
+        self.assertEqual(ubuntu["updates"][0]["status"], "ready")
         self.assertEqual(arch["updates"], [])
         for target, reason in ((stopped, "STOPPED"), (inaccessible, "Incus access"), (apt_failure, "APT update query")):
             self.assertFalse(target["success"])
@@ -317,7 +353,7 @@ class CheckCliTests(unittest.TestCase):
     def test_refresh_checks_ubuntu_even_when_host_check_fails(self):
         self.write_config('[[containers]]\nname = "guest"\ndistro = "ubuntu"\n')
         self.commands.side_effect = [completed(1), completed(stdout="Status: RUNNING\n"),
-                                     completed(), completed(stdout="curl:amd64\t1\t2\n")]
+                                     completed(), completed(stdout="curl:amd64\t1\t2\tready\n")]
         self.assertEqual(main(["check", "--config", str(self.config), "--refresh", "--json"]), 1)
         host, guest = json.loads(self.stdout.getvalue())["targets"]
         self.assertFalse(host["success"])
@@ -330,15 +366,27 @@ class CheckCliTests(unittest.TestCase):
         package = "package-with-a-very-long-name-for-the-details-column:amd64"
         version = "2:1.2345678901234567890~really-long-1ubuntu2.1"
         self.commands.side_effect = [completed(127), completed(stdout="Status: RUNNING\n"),
-                                     completed(stdout=f"{package}\t1.0\t{version}\n")]
+                                     completed(stdout=f"{package}\t1.0\t{version}\tdeferred\n")]
         self.assertEqual(main(["check", "--config", str(self.config), "--details"]), 1)
         output = self.stdout.getvalue()
         self.assertIn("host (arch): FAILED", output)
-        self.assertIn("guest (ubuntu): 1 update — metadata cached (may be stale)", output)
+        self.assertIn("guest (ubuntu): 1 candidate — metadata cached (may be stale)", output)
         self.assertIn(package, output)
         self.assertIn(version, output)
-        self.assertIn("1 update across 1 target. 1 check failed.", output)
+        self.assertIn("1 candidate across 1 target. 0 ready, 1 deferred, 0 unassessed. 1 check failed.", output)
         self.assertIn("Install pacman-contrib", self.stderr.getvalue())
+
+    def test_summary_reports_phased_candidates_as_deferred(self):
+        self.write_config('[[containers]]\nname = "immich"\ndistro = "ubuntu"\n')
+        packages = ("libnss-systemd", "libpam-systemd", "libsystemd-shared", "libsystemd0", "libudev1",
+                    "systemd", "systemd-dev", "systemd-resolved", "systemd-sysv", "systemd-timesyncd", "udev")
+        deferred = "".join(f"{name}:amd64\t255.4-1ubuntu8.11\t255.4-1ubuntu8.12\tdeferred\n" for name in packages)
+        self.commands.side_effect = [completed(2), completed(stdout="Status: RUNNING\n"), completed(),
+                                     completed(stdout=deferred)]
+        self.assertEqual(main(["check", "--config", str(self.config), "--refresh"]), 0)
+        output = self.stdout.getvalue()
+        self.assertRegex(output, r"immich\s+ubuntu\s+11\s+0\s+11\s+0\s+refreshed")
+        self.assertIn("11 candidates across 1 target. 0 ready, 11 deferred, 0 unassessed.", output)
 
     def test_config_and_usage_errors(self):
         self.config.write_text("containers = true\n", encoding="utf-8")
